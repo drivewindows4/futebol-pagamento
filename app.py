@@ -1,82 +1,97 @@
 import streamlit as st
-from supabase import create_client, Client
 import pandas as pd
+import os
 from datetime import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Arena Pay - Supabase", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="Gestão de Futebol Local", page_icon="⚽", layout="wide")
 
-# Credenciais do Supabase (Devem ser configuradas nos Secrets do Streamlit)
-# Se estiver testando localmente, substitua pelas suas chaves
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# Nome do arquivo que será salvo na pasta do seu computador
+ARQUIVO_DADOS = "banco_de_dados_futebol.csv"
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- FUNÇÕES DE BANCO DE DADOS ---
-def fetch_data():
-    response = supabase.table("atletas").select("*").order("id").execute()
-    return pd.DataFrame(response.data)
-
-def add_atleta(nome, tel, data):
-    df_atual = fetch_data()
-    novo_atleta = {
-        "quantidade": len(df_atual) + 1,
-        "nome": nome,
-        "telefone": tel,
-        "data_jogo": data.strftime("%d/%m/%Y"),
-        "pago": "Pendente",
-        "recebeu_dinheiro": "Não"
-    }
-    supabase.table("atletas").insert(novo_atleta).execute()
-
-def update_pagamento(atleta_id, modo):
-    if modo == "dinheiro":
-        update = {"pago": "SIM", "recebeu_dinheiro": "Sim"}
+# --- FUNÇÕES DE PERSISTÊNCIA ---
+def carregar_dados():
+    if os.path.exists(ARQUIVO_DADOS):
+        df = pd.read_csv(ARQUIVO_DADOS)
+        # Limpeza para garantir que o pandas leia corretamente
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
     else:
-        update = {"pago": "SIM", "comprovante_pix": "Anexado"}
-    supabase.table("atletas").update(update).eq("id", atleta_id).execute()
+        # Se o arquivo não existir, cria um novo com as colunas certas
+        colunas = ["Quantidade", "Nome", "Telefone", "Data", "Pago", "Comprovante Pix", "Recebeu em Dinheiro", "Cadastro"]
+        return pd.DataFrame(columns=colunas)
 
-# --- INTERFACE ---
-st.title("⚽ Gestão de Atletas (Supabase)")
+def salvar_dados(df):
+    df.to_csv(ARQUIVO_DADOS, index=False)
 
-df = fetch_data()
+# Inicializa os dados
+df = carregar_dados()
 
-# Aba lateral para cadastro
+# --- INTERFACE MODERNA ---
+st.title("⚽ Controle de Futebol (Modo Local)")
+st.info(f"💾 Os dados estão sendo salvos em: {os.path.abspath(ARQUIVO_DADOS)}")
+
+# --- CADASTRO (BARRA LATERAL) ---
 with st.sidebar:
-    st.header("Novo Cadastro")
-    with st.form("form_cadastro", clear_on_submit=True):
-        nome = st.text_input("Nome")
+    st.header("Novo Atleta")
+    with st.form("cadastro_form", clear_on_submit=True):
+        nome = st.text_input("Nome do Jogador")
         tel = st.text_input("WhatsApp")
-        data = st.date_input("Data do Jogo", datetime.now())
-        if st.form_submit_button("Cadastrar"):
+        data_j = st.date_input("Data do Jogo", datetime.now())
+        
+        if st.form_submit_button("✅ Cadastrar"):
             if nome:
-                add_atleta(nome, tel, data)
-                st.success("Cadastrado!")
+                nova_linha = {
+                    "Quantidade": len(df) + 1,
+                    "Nome": nome,
+                    "Telefone": tel,
+                    "Data": data_j.strftime("%d/%m/%Y"),
+                    "Pago": "Pendente",
+                    "Comprovante Pix": "",
+                    "Recebeu em Dinheiro": "Não",
+                    "Cadastro": datetime.now().strftime("%d/%m/%Y %H:%M")
+                }
+                df = pd.concat([df, pd.DataFrame([nova_linha])], ignore_index=True)
+                salvar_dados(df)
+                st.success("Salvo no computador!")
                 st.rerun()
 
-# Listagem de Pendentes
-st.subheader("💸 Pendentes")
-if not df.empty:
-    # Garante que a coluna existe e filtra
-    pendentes = df[df['pago'] != "SIM"]
-    
-    for _, row in pendentes.iterrows():
-        with st.container():
-            c1, c2, c3 = st.columns([2, 1, 1])
-            c1.write(f"**{row['nome']}**")
-            
-            if c2.button("💵 Dinheiro", key=f"d_{row['id']}"):
-                update_pagamento(row['id'], "dinheiro")
-                st.rerun()
+# --- GESTÃO DE PAGAMENTOS ---
+tab1, tab2 = st.tabs(["⚡ Pendentes de Pagamento", "📋 Lista Geral de Atletas"])
+
+with tab1:
+    # Filtra quem ainda não pagou
+    df['Pago'] = df['Pago'].fillna("Pendente").astype(str).str.strip()
+    pendentes = df[df['Pago'].str.upper() != "SIM"]
+
+    if not pendentes.empty:
+        for index, row in pendentes.iterrows():
+            with st.container():
+                c1, c2, c3 = st.columns([2, 1, 1])
+                c1.subheader(f"👤 {row['Nome']}")
                 
-            foto = c3.file_uploader("Pix", type=['jpg','png'], key=f"f_{row['id']}", label_visibility="collapsed")
-            if foto:
-                update_pagamento(row['id'], "pix")
-                st.rerun()
-            st.divider()
-else:
-    st.info("Nenhum atleta cadastrado.")
+                # Opção Dinheiro
+                if c2.button("💵 Recebi Dinheiro", key=f"d_{index}"):
+                    df.at[index, "Pago"] = "SIM"
+                    df.at[index, "Recebeu em Dinheiro"] = "Sim"
+                    salvar_dados(df)
+                    st.rerun()
+                
+                # Opção Pix
+                foto = c3.file_uploader("Subir Comprovante Pix", type=['png','jpg','jpeg'], key=f"f_{index}")
+                if foto:
+                    df.at[index, "Pago"] = "SIM"
+                    df.at[index, "Comprovante Pix"] = foto.name
+                    salvar_dados(df)
+                    st.rerun()
+                st.divider()
+    else:
+        st.success("🎉 Todos os atletas cadastrados estão com o pagamento em dia!")
 
-with st.expander("📊 Tabela Completa"):
-    st.dataframe(df, use_container_width=True)
+with tab2:
+    st.write("Abaixo estão todos os registros salvos no seu arquivo CSV:")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    # Botão extra para abrir o arquivo direto no Excel (opcional)
+    if st.button("📂 Ver onde o arquivo está salvo"):
+        st.write(os.path.abspath(ARQUIVO_DADOS))
