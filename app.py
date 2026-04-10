@@ -1,127 +1,82 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+from supabase import create_client, Client
 import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(
-    page_title="Arena Pay - Gestão de Futebol",
-    page_icon="⚽",
-    layout="wide"
-)
+st.set_page_config(page_title="Arena Pay - Supabase", page_icon="⚽", layout="wide")
 
-# Estilo CSS para deixar a interface moderna
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 8px; height: 3em; background-color: #007bff; color: white; }
-    .status-card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.05);
-        border-left: 5px solid #007bff;
+# Credenciais do Supabase (Devem ser configuradas nos Secrets do Streamlit)
+# Se estiver testando localmente, substitua pelas suas chaves
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- FUNÇÕES DE BANCO DE DADOS ---
+def fetch_data():
+    response = supabase.table("atletas").select("*").order("id").execute()
+    return pd.DataFrame(response.data)
+
+def add_atleta(nome, tel, data):
+    df_atual = fetch_data()
+    novo_atleta = {
+        "quantidade": len(df_atual) + 1,
+        "nome": nome,
+        "telefone": tel,
+        "data_jogo": data.strftime("%d/%m/%Y"),
+        "pago": "Pendente",
+        "recebeu_dinheiro": "Não"
     }
-    </style>
-    """, unsafe_allow_html=True)
+    supabase.table("atletas").insert(novo_atleta).execute()
 
-# --- CONEXÃO ---
-URL = "https://docs.google.com/spreadsheets/d/1VlBmkuH1DVkcE779hKCnCX2kweK0zY41zhPkW9Y_qDQ/edit?usp=sharing"
-conn = st.connection("gsheets", type=GSheetsConnection)
+def update_pagamento(atleta_id, modo):
+    if modo == "dinheiro":
+        update = {"pago": "SIM", "recebeu_dinheiro": "Sim"}
+    else:
+        update = {"pago": "SIM", "comprovante_pix": "Anexado"}
+    supabase.table("atletas").update(update).eq("id", atleta_id).execute()
 
-def get_data():
-    # O segredo: header=1 faz o pandas ignorar a linha de título decorativo
-    df = conn.read(spreadsheet=URL, ttl=0, header=1)
-    df.columns = [str(c).strip() for c in df.columns] # Limpa nomes das colunas
-    # Remove linhas vazias e garante que a coluna 'Pago' existe
-    df = df.dropna(subset=['Quantidade'], how='all')
-    if 'Pago' not in df.columns:
-        st.error("Erro Crítico: Coluna 'Pago' não encontrada. Verifique a Linha 2 da Planilha.")
-        st.stop()
-    return df
+# --- INTERFACE ---
+st.title("⚽ Gestão de Atletas (Supabase)")
 
-try:
-    df = get_data()
-except Exception as e:
-    st.error(f"Erro ao conectar: {e}")
-    st.stop()
+df = fetch_data()
 
-# --- BARRA LATERAL (CADASTRO) ---
+# Aba lateral para cadastro
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/53/53283.png", width=80)
-    st.header("⚽ Painel Administrativo")
-    st.divider()
-    
-    with st.form("novo_atleta", clear_on_submit=True):
-        st.subheader("Novo Cadastro")
-        nome = st.text_input("Nome do Jogador")
+    st.header("Novo Cadastro")
+    with st.form("form_cadastro", clear_on_submit=True):
+        nome = st.text_input("Nome")
         tel = st.text_input("WhatsApp")
-        data_j = st.date_input("Data da Partida", datetime.now())
-        
-        if st.form_submit_button("✅ CADASTRAR ATLETA"):
+        data = st.date_input("Data do Jogo", datetime.now())
+        if st.form_submit_button("Cadastrar"):
             if nome:
-                nova_linha = pd.DataFrame([{
-                    "Quantidade": len(df) + 1,
-                    "Nome": nome,
-                    "Telefone": tel,
-                    "Data": data_j.strftime("%d/%m/%Y"),
-                    "Pago": "Pendente",
-                    "comprovante pix": "",
-                    "Recebeu em dinheiro": "Não",
-                    "Cadastro": datetime.now().strftime("%d/%m/%Y %H:%M")
-                }])
-                df_atualizado = pd.concat([df, nova_linha], ignore_index=True)
-                conn.update(spreadsheet=URL, data=df_atualizado)
-                st.toast(f"Atleta {nome} adicionado!", icon="🔥")
+                add_atleta(nome, tel, data)
+                st.success("Cadastrado!")
                 st.rerun()
 
-# --- CORPO DO APP ---
-col_t1, col_t2 = st.columns([3, 1])
-with col_t1:
-    st.title("Gestão de Recebimentos")
-with col_t2:
-    total_pago = len(df[df['Pago'].astype(str).str.upper() == "SIM"])
-    st.metric("Total Pagos", f"{total_pago}/{len(df)}")
-
-tab1, tab2 = st.tabs(["⚡ Pendentes", "📋 Lista Geral"])
-
-with tab1:
-    # Limpeza rápida para garantir que o filtro funcione
-    df['Pago'] = df['Pago'].fillna("Pendente").astype(str).str.strip()
-    pendentes = df[df['Pago'].str.upper() != "SIM"]
-
-    if not pendentes.empty:
-        for index, row in pendentes.iterrows():
-            with st.container():
-                # Design de Card moderno
-                st.markdown(f"""<div class="status-card"><b>Atleta:</b> {row['Nome']} | <b>Data:</b> {row['Data']}</div>""", unsafe_allow_html=True)
+# Listagem de Pendentes
+st.subheader("💸 Pendentes")
+if not df.empty:
+    # Garante que a coluna existe e filtra
+    pendentes = df[df['pago'] != "SIM"]
+    
+    for _, row in pendentes.iterrows():
+        with st.container():
+            c1, c2, c3 = st.columns([2, 1, 1])
+            c1.write(f"**{row['nome']}**")
+            
+            if c2.button("💵 Dinheiro", key=f"d_{row['id']}"):
+                update_pagamento(row['id'], "dinheiro")
+                st.rerun()
                 
-                c1, c2, c3 = st.columns([2, 1, 1])
-                
-                foto = c1.file_uploader(f"Anexar Pix de {row['Nome']}", type=['png','jpg'], key=f"p_{index}")
-                
-                if c2.button("💵 Recebeu Dinheiro", key=f"d_{index}"):
-                    df.at[index, "Pago"] = "SIM"
-                    df.at[index, "Recebeu em dinheiro"] = "Sim"
-                    conn.update(spreadsheet=URL, data=df)
-                    st.rerun()
-                
-                if foto:
-                    df.at[index, "Pago"] = "SIM"
-                    df.at[index, "comprovante pix"] = foto.name
-                    conn.update(spreadsheet=URL, data=df)
-                    st.rerun()
-                st.markdown("<br>", unsafe_allow_html=True)
-    else:
-        st.success("🎉 Parabéns! Todos os atletas pagaram.")
+            foto = c3.file_uploader("Pix", type=['jpg','png'], key=f"f_{row['id']}", label_visibility="collapsed")
+            if foto:
+                update_pagamento(row['id'], "pix")
+                st.rerun()
+            st.divider()
+else:
+    st.info("Nenhum atleta cadastrado.")
 
-with tab2:
-    st.dataframe(
-        df, 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "Pago": st.column_config.TextColumn("Status", help="SIM ou Pendente"),
-            "Telefone": st.column_config.LinkColumn("WhatsApp")
-        }
-    )
+with st.expander("📊 Tabela Completa"):
+    st.dataframe(df, use_container_width=True)
