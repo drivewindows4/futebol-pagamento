@@ -4,112 +4,90 @@ import pandas as pd
 from datetime import date
 from fpdf import FPDF
 
-# 1. CONFIGURAÇÃO DA PÁGINA
+# 1. CONFIGURAÇÃO
 st.set_page_config(page_title="Arena Baba Pro", page_icon="⚽", layout="wide")
 
-# Link da sua planilha (Certifique-se que está como EDITOR)
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1wsraZUP1iT0RGx8vv-7XfhNSSEy9VrExHvjSNm9rn2o/edit?usp=sharing"
+# Link da sua planilha (O link que aparece no seu navegador)
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1wsraZUP1iT0RGx8vv-7XfhNSSEy9VrExHvjSNm9rn2o/edit?gid=0"
 
-# 2. CONEXÃO E LIMPEZA DE DADOS
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def carregar_e_limpar_dados():
+def carregar_dados():
     try:
-        # Lê os dados da planilha
+        # Lê a planilha
         df = conn.read(spreadsheet=URL_PLANILHA, ttl=0)
         
-        # --- LIMPEZA CRÍTICA PARA EVITAR O ERRO ---
-        # 1. Garante que as colunas existam
-        for col in ['Nome', 'Pagou', 'Data']:
-            if col not in df.columns:
-                df[col] = ""
+        # Se a planilha estiver vazia ou com erro, cria estrutura limpa
+        if df.empty:
+            return pd.DataFrame(columns=['Nome', 'Pagou', 'Data'])
         
-        # 2. Converte a coluna Pagou: tudo que não for True vira False (evita erro de tipo)
-        df['Pagou'] = df['Pagou'].fillna(False).infer_objects(copy=False)
-        df['Pagou'] = df['Pagou'].map({True: True, False: False, 'TRUE': True, 'FALSE': False, '1': True, '0': False}).fillna(False).astype(bool)
+        # --- LIMPEZA DE SEGURANÇA ---
+        # Garante as colunas
+        for c in ['Nome', 'Pagou', 'Data']:
+            if c not in df.columns: df[c] = ""
+            
+        # Remove linhas onde o Nome está totalmente vazio (evita o erro do print)
+        df = df.dropna(subset=['Nome'])
+        df = df[df['Nome'].str.strip() != ""]
         
-        # 3. Garante que Nome e Data sejam strings (texto)
-        df['Nome'] = df['Nome'].fillna("").astype(str)
-        df['Data'] = df['Data'].fillna("").astype(str)
+        # Converte Pagou para Booleano real
+        df['Pagou'] = df['Pagou'].astype(str).str.upper().map({
+            'TRUE': True, '1': True, '1.0': True, 'VERDADEIRO': True,
+            'FALSE': False, '0': False, '0.0': False, 'FALSO': False, 'NAN': False
+        }).fillna(False).astype(bool)
         
-        return df[['Nome', 'Pagou', 'Data']] # Retorna apenas as colunas necessárias
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
+        return df[['Nome', 'Pagou', 'Data']]
+    except:
         return pd.DataFrame(columns=['Nome', 'Pagou', 'Data'])
 
-# Inicialização do Estado
 if "dados" not in st.session_state:
-    st.session_state.dados = carregar_e_limpar_dados()
+    st.session_state.dados = carregar_dados()
 
-# 3. CABEÇALHO E MÉTRICAS
+# 3. INTERFACE
 st.title("⚽ Gestão Arena Baba")
 
 df_atual = st.session_state.dados
-total = len(df_atual)
-pagos = int(df_atual['Pagou'].sum())
-inadimplentes = total - pagos
-
-col1, col2, col3 = st.columns(3)
-col1.metric("👥 Total Atletas", total)
-col2.metric("✅ Pagos", pagos)
-col3.metric("❌ Inadimplentes", inadimplentes)
+c1, c2, c3 = st.columns(3)
+c1.metric("👥 Total", len(df_atual))
+c2.metric("✅ Pagos", int(df_atual['Pagou'].sum()))
+c3.metric("❌ Faltam", len(df_atual) - int(df_atual['Pagou'].sum()))
 
 st.divider()
 
-# 4. EDITOR DE TABELA (AQUI MORA O ERRO)
-st.subheader("📋 Lista de Presença")
-
-# Usamos uma cópia limpa para o editor
-df_para_editar = df_atual.copy()
-
+# 4. EDITOR (Protegido contra células vazias)
+st.subheader("📋 Lista de Controle")
 df_editado = st.data_editor(
-    df_para_editar,
+    df_atual,
     column_config={
-        "Pagou": st.column_config.CheckboxColumn("Pago?", width="small", default=False),
-        "Nome": st.column_config.TextColumn("Nome do Atleta", required=True),
-        "Data": st.column_config.TextColumn("Data de Cadastro", disabled=True)
+        "Pagou": st.column_config.CheckboxColumn("Pago?", default=False),
+        "Nome": st.column_config.TextColumn("Nome do Atleta"),
+        "Data": st.column_config.TextColumn("Data", disabled=True)
     },
     hide_index=True,
     use_container_width=True,
-    num_rows="dynamic" # Permite adicionar/remover
+    num_rows="dynamic"
 )
 
 # 5. SALVAMENTO
-if st.button("💾 Gravar Alterações na Nuvem", use_container_width=True):
-    try:
-        # Preenche a data para quem não tem (novos jogadores)
-        hoje = date.today().strftime("%d/%m/%Y")
-        df_editado['Data'] = df_editado['Data'].replace("", hoje).replace("nan", hoje)
-        df_editado['Data'] = df_editado['Data'].fillna(hoje)
-        
-        # Atualiza no Google Sheets
-        conn.update(spreadsheet=URL_PLANILHA, data=df_editado)
-        st.session_state.dados = df_editado
-        st.success("✅ Dados sincronizados com sucesso!")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Erro ao salvar: {e}")
+if st.button("💾 Salvar na Nuvem", use_container_width=True):
+    # Preenche datas vazias
+    hoje = date.today().strftime("%d/%m/%Y")
+    df_editado['Data'] = df_editado['Data'].replace("", hoje).fillna(hoje)
+    
+    # Envia para o Google
+    conn.update(spreadsheet=URL_PLANILHA, data=df_editado)
+    st.session_state.dados = df_editado
+    st.success("✅ Salvo com sucesso!")
+    st.rerun()
 
-# 6. EXPORTAR PDF
-if st.button("📄 Gerar PDF para WhatsApp"):
+# 6. PDF
+if st.button("📄 Exportar PDF"):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"LISTA BABA - {date.today().strftime('%d/%m/%Y')}", ln=True, align='C')
-    pdf.ln(5)
-    
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(40, 10, "DATA", 1)
-    pdf.cell(90, 10, "NOME", 1)
-    pdf.cell(60, 10, "STATUS", 1, 1)
-    
-    pdf.set_font("Helvetica", "", 10)
-    for _, row in df_editado.iterrows():
-        status = "PAGO" if row['Pagou'] else "FALTA"
-        nome = str(row['Nome']).encode('latin-1', 'ignore').decode('latin-1')
-        pdf.cell(40, 10, str(row['Data']), 1)
-        pdf.cell(90, 10, nome, 1)
-        pdf.cell(60, 10, status, 1, 1)
-    
-    pdf_bytes = bytes(pdf.output())
-    st.download_button("📥 Baixar PDF", pdf_bytes, "baba.pdf", "application/pdf")
+    pdf.cell(0, 10, f"BABA - {date.today().strftime('%d/%m/%Y')}", ln=True, align='C')
+    for _, r in df_editado.iterrows():
+        status = "PAGO" if r['Pagou'] else "FALTA"
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 10, f"{r['Nome']} - {status}".encode('latin-1', 'ignore').decode('latin-1'), ln=True)
+    st.download_button("📥 Baixar PDF", bytes(pdf.output()), "baba.pdf", "application/pdf")
