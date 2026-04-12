@@ -8,7 +8,7 @@ from fpdf import FPDF
 st.set_page_config(page_title="Arena Baba Pro", page_icon="⚽", layout="wide")
 
 # Link da sua planilha (Substitua pelo seu link real)
-URL_PLANILHA = "COLE_AQUI_O_LINK_DA_SUA_PLANILHA"
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1wsraZUP1iT0RGx8vv-7XfhNSSEy9VrExHvjSNm9rn2o/edit?usp=sharing"
 
 # 2. CONEXÃO E TRATAMENTO DE DADOS
 conn = st.connection("gsheets", type=GSheetsConnection)
