@@ -1,93 +1,124 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import date
 from fpdf import FPDF
 
-# 1. CONFIGURAÇÃO
+# 1. CONFIGURAÇÃO DA PÁGINA
 st.set_page_config(page_title="Arena Baba Pro", page_icon="⚽", layout="wide")
 
-# Link da sua planilha (O link que aparece no seu navegador)
-URL_PLANILHA = "https://docs.google.com/spreadsheets/d/1wsraZUP1iT0RGx8vv-7XfhNSSEy9VrExHvjSNm9rn2o/edit?gid=0"
+# 2. INICIALIZAÇÃO DOS DADOS (Com todos os seus jogadores)
+if 'lista_baba' not in st.session_state:
+    dados_iniciais = [
+        ["Rogério", True], ["Djavan", True], ["Fabrício", True], ["Robson", False],
+        ["Daniel", True], ["cosme", True], ["Mendel", True], ["Raylan", True],
+        ["caçulo", False], ["Sivaldo", True], ["carleilton", True], ["jai", True],
+        ["modesto", False], ["Jeferson", True], ["João da Cruz", False],
+        ["João Paulo", False], ["Dinho", True], ["Rodrigo", False], ["maciel", True],
+        ["Cleverson", False], ["Leo", False], ["Eduardo bigode", False], ["Micael", False]
+    ]
+    df_init = pd.DataFrame(dados_iniciais, columns=['Nome', 'Pagou'])
+    df_init['Data'] = date.today().strftime("%d/%m/%Y")
+    st.session_state.lista_baba = df_init
 
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def carregar_dados():
-    try:
-        # Lê a planilha
-        df = conn.read(spreadsheet=URL_PLANILHA, ttl=0)
+# --- FUNÇÃO PARA GERAR O PDF (CORRIGIDA) ---
+def gerar_pdf(dataframe):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Título
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, f"RELATORIO BABA - {date.today().strftime('%d/%m/%Y')}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Cabeçalho da Tabela
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(40, 10, "DATA", 1, 0, 'C', True)
+    pdf.cell(90, 10, "NOME", 1, 0, 'C', True)
+    pdf.cell(60, 10, "STATUS", 1, 1, 'C', True)
+    
+    # Linhas dos Jogadores
+    pdf.set_font("Helvetica", "", 12)
+    for i, row in dataframe.iterrows():
+        status = "PAGO" if row['Pagou'] else "FALTA"
+        # Limpeza de acentos para evitar erro no PDF
+        nome_limpo = str(row['Nome']).encode('latin-1', 'ignore').decode('latin-1')
         
-        # Se a planilha estiver vazia ou com erro, cria estrutura limpa
-        if df.empty:
-            return pd.DataFrame(columns=['Nome', 'Pagou', 'Data'])
+        pdf.cell(40, 10, str(row['Data']), 1)
+        pdf.cell(90, 10, nome_limpo, 1)
+        pdf.cell(60, 10, status, 1, 1, 'C')
         
-        # --- LIMPEZA DE SEGURANÇA ---
-        # Garante as colunas
-        for c in ['Nome', 'Pagou', 'Data']:
-            if c not in df.columns: df[c] = ""
-            
-        # Remove linhas onde o Nome está totalmente vazio (evita o erro do print)
-        df = df.dropna(subset=['Nome'])
-        df = df[df['Nome'].str.strip() != ""]
-        
-        # Converte Pagou para Booleano real
-        df['Pagou'] = df['Pagou'].astype(str).str.upper().map({
-            'TRUE': True, '1': True, '1.0': True, 'VERDADEIRO': True,
-            'FALSE': False, '0': False, '0.0': False, 'FALSO': False, 'NAN': False
-        }).fillna(False).astype(bool)
-        
-        return df[['Nome', 'Pagou', 'Data']]
-    except:
-        return pd.DataFrame(columns=['Nome', 'Pagou', 'Data'])
+    return bytes(pdf.output())
 
-if "dados" not in st.session_state:
-    st.session_state.dados = carregar_dados()
+# 3. BARRA LATERAL (GESTÃO)
+with st.sidebar:
+    st.header("⚙️ Gestão de Atletas")
+    
+    # Adicionar novo atleta
+    with st.expander("➕ Adicionar Atleta"):
+        novo_nome = st.text_input("Nome do Jogador")
+        if st.button("Confirmar Cadastro"):
+            if novo_nome:
+                nova_linha = pd.DataFrame([[novo_nome, False, date.today().strftime("%d/%m/%Y")]], 
+                                         columns=['Nome', 'Pagou', 'Data'])
+                st.session_state.lista_baba = pd.concat([st.session_state.lista_baba, nova_linha], ignore_index=True)
+                st.rerun()
+    
+    # Excluir atleta
+    with st.expander("🗑️ Excluir Atleta"):
+        nomes_atuais = st.session_state.lista_baba['Nome'].tolist()
+        atleta_remover = st.selectbox("Escolha quem remover:", nomes_atuais)
+        if st.button("Remover Permanentemente"):
+            st.session_state.lista_baba = st.session_state.lista_baba[st.session_state.lista_baba['Nome'] != atleta_remover]
+            st.rerun()
 
-# 3. INTERFACE
-st.title("⚽ Gestão Arena Baba")
+# 4. PAINEL PRINCIPAL
+st.title("⚽ Controle de Pagamentos - Arena Baba")
 
-df_atual = st.session_state.dados
+# Métricas no Topo
+df_atual = st.session_state.lista_baba
+total = len(df_atual)
+pagos = int(df_atual['Pagou'].sum())
+faltam = total - pagos
+
 c1, c2, c3 = st.columns(3)
-c1.metric("👥 Total", len(df_atual))
-c2.metric("✅ Pagos", int(df_atual['Pagou'].sum()))
-c3.metric("❌ Faltam", len(df_atual) - int(df_atual['Pagou'].sum()))
+c1.metric("👥 Total Atletas", total)
+c2.metric("✅ Confirmados", pagos)
+c3.metric("❌ Pendentes", faltam)
 
 st.divider()
 
-# 4. EDITOR (Protegido contra células vazias)
-st.subheader("📋 Lista de Controle")
+# Tabela Interativa
+st.subheader("📋 Lista de Presença")
 df_editado = st.data_editor(
     df_atual,
     column_config={
-        "Pagou": st.column_config.CheckboxColumn("Pago?", default=False),
+        "Pagou": st.column_config.CheckboxColumn("Pago?", width="small"),
         "Nome": st.column_config.TextColumn("Nome do Atleta"),
         "Data": st.column_config.TextColumn("Data", disabled=True)
     },
     hide_index=True,
-    use_container_width=True,
-    num_rows="dynamic"
+    use_container_width=True
 )
+st.session_state.lista_baba = df_editado
 
-# 5. SALVAMENTO
-if st.button("💾 Salvar na Nuvem", use_container_width=True):
-    # Preenche datas vazias
-    hoje = date.today().strftime("%d/%m/%Y")
-    df_editado['Data'] = df_editado['Data'].replace("", hoje).fillna(hoje)
+st.divider()
+
+# 5. BOTÃO DE DOWNLOAD PDF
+st.subheader("📥 Exportar Relatório")
+
+# Gerar os bytes do PDF
+try:
+    pdf_output = gerar_pdf(df_editado)
     
-    # Envia para o Google
-    conn.update(spreadsheet=URL_PLANILHA, data=df_editado)
-    st.session_state.dados = df_editado
-    st.success("✅ Salvo com sucesso!")
-    st.rerun()
+    st.download_button(
+        label="📄 Baixar Lista em PDF (Para WhatsApp)",
+        data=pdf_output,
+        file_name=f"lista_baba_{date.today()}.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
+except Exception as e:
+    st.error(f"Erro ao gerar o arquivo PDF: {e}")
 
-# 6. PDF
-if st.button("📄 Exportar PDF"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"BABA - {date.today().strftime('%d/%m/%Y')}", ln=True, align='C')
-    for _, r in df_editado.iterrows():
-        status = "PAGO" if r['Pagou'] else "FALTA"
-        pdf.set_font("Helvetica", "", 11)
-        pdf.cell(0, 10, f"{r['Nome']} - {status}".encode('latin-1', 'ignore').decode('latin-1'), ln=True)
-    st.download_button("📥 Baixar PDF", bytes(pdf.output()), "baba.pdf", "application/pdf")
+st.info("💡 **Dica:** Após baixar o PDF no telemóvel, pode partilhá-lo diretamente no grupo do Baba!")
